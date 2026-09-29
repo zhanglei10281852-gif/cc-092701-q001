@@ -58,10 +58,16 @@ def test_priority_capability_claim_and_result_version(client):
     assert no_match.status_code == 200 and no_match.json()["task"] is None
     claimed = client.post("/api/compute/tasks/claim", json={"worker_id": "w1", "capabilities": ["solver-a"], "lease_seconds": 60})
     assert claimed.status_code == 200
-    assert claimed.json()["task"]["id"] == high["id"]
+    claimed_task = claimed.json()["task"]
+    assert claimed_task["id"] == high["id"]
+    assert claimed_task["lease_epoch"] == 1
     completed = client.post(
         f"/api/compute/tasks/{high['id']}/complete",
-        json={"worker_id": "w1", "result": {"value": 3.14}, "metrics": {"seconds": 2}},
+        json={
+            "worker_id": "w1", "result": {"value": 3.14}, "metrics": {"seconds": 2},
+            "lease_epoch": claimed_task["lease_epoch"], "expected_version": claimed_task["version"],
+            "receipt_id": "receipt-high-001",
+        },
     )
     assert completed.status_code == 200
     details = client.get(f"/api/compute/task-details/{high['id']}").json()
@@ -106,15 +112,56 @@ def test_failure_backoff_and_expired_lease_recovery(client):
     first = service.submit(submit_payload("failure-000001"))
     claimed = service.claim("worker-a", ["solver-a"], 10)
     assert claimed and claimed["id"] == first["id"]
-    failed = service.fail(first["id"], "worker-a", "numeric_error", "数值不收敛", True)
+    failed = service.fail(
+        first["id"], "worker-a", "numeric_error", "数值不收敛", True,
+        lease_epoch=claimed["lease_epoch"], expected_version=claimed["version"], receipt_id="receipt-fail-001",
+    )
     assert failed["status"] == "queued"
     assert failed["available_at"] > failed["updated_at"]
     clock.advance(seconds=2)
     claimed_again = service.claim("worker-a", ["solver-a"], 10)
     assert claimed_again and claimed_again["attempt_count"] == 2
+    assert claimed_again["lease_epoch"] == claimed["lease_epoch"] + 1
     clock.advance(seconds=11)
     recovered = service.recover_expired()
     assert recovered["exhausted"] == [first["id"]]
     details = service.get_task(first["id"])
     assert details["status"] == "failed"
     assert details["interventions"][-1]["action"] == "lease_recovery"
+    assert [event["event_type"] for event in details["lease_events"]] == ["granted", "requeued", "granted", "recovered"]
+
+
+def test_late_receipt_over_http_returns_distinguishable_conflict(client):
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from app.database import get_connection as _get_connection
+    from app.core.clock import FrozenClock as _FrozenClock
+
+    create_template(client)
+    task = client.post("/api/compute/tasks", json=submit_payload("http-takeover-1")).json()
+
+    # 领取、失联恢复与接管全部走同一可控时钟，精确覆盖租约边界
+    clock = _FrozenClock(_datetime(2027, 1, 2, 3, 0, tzinfo=_UTC))
+    controlled = ComputeOperationsService(_get_connection(), clock)
+    claimed = controlled.claim("teacher-old", ["solver-a"], 60)
+    clock.advance(seconds=61)
+    controlled.recover_expired()
+    reclaimed = controlled.claim("teacher-new", ["solver-a"], 60)
+
+    stale_body = {
+        "worker_id": "teacher-old", "result": {"score": 40}, "metrics": {},
+        "lease_epoch": claimed["lease_epoch"], "expected_version": claimed["version"], "receipt_id": "http-late-0001",
+    }
+    rejected = client.post(f"/api/compute/tasks/{task['id']}/complete", json=stale_body)
+    assert rejected.status_code == 409
+    body = rejected.json()["error"]
+    assert body["code"] == "lease_conflict"
+    assert body["context"]["reason"] in {"owner_changed", "epoch_stale"}
+
+    readback = client.get(f"/api/compute/task-details/{task['id']}").json()
+    assert readback["status"] == "running"
+    assert readback["lease_owner"] == "teacher-new"
+    assert readback["lease_epoch"] == reclaimed["lease_epoch"]
+    assert readback["results"] == []
+    assert any(event["event_type"] == "rejected" for event in readback["lease_events"])

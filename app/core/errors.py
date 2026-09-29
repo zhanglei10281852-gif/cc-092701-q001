@@ -21,6 +21,12 @@ class ConflictError(DomainError):
     code = "conflict"
 
 
+class LeaseConflictError(ConflictError):
+    """回执出示的租约代次或任务版本已经过期（典型的失联旧会话迟到写入）。"""
+
+    code = "lease_conflict"
+
+
 class AuthenticationError(DomainError):
     status_code = 401
     code = "authentication_failed"

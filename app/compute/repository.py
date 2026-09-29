@@ -83,6 +83,34 @@ class ComputeRepository:
             (task_id, actor, action, reason, json.dumps(before, ensure_ascii=False, sort_keys=True), json.dumps(after, ensure_ascii=False, sort_keys=True), batch_key, now),
         )
 
+    def lease_events(self, task_id: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.connection.execute("SELECT * FROM compute_lease_events WHERE task_id=? ORDER BY id", (task_id,)).fetchall()]
+
+    def add_lease_event(self, *, task_id: int, event_type: str, lease_epoch: int, actor: str, detail: dict[str, Any], now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_lease_events(task_id,event_type,lease_epoch,actor,detail_json,created_at) VALUES(?,?,?,?,?,?)",
+            (task_id, event_type, lease_epoch, actor, json.dumps(detail, ensure_ascii=False, sort_keys=True), now),
+        )
+
+    def receipt(self, task_id: int, lease_epoch: int, receipt_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_receipts WHERE task_id=? AND lease_epoch=? AND receipt_id=?",
+            (task_id, lease_epoch, receipt_id),
+        ).fetchone()
+
+    def epoch_owner(self, task_id: int, lease_epoch: int) -> str | None:
+        row = self.connection.execute(
+            "SELECT actor FROM compute_lease_events WHERE task_id=? AND lease_epoch=? AND event_type='granted' ORDER BY id DESC LIMIT 1",
+            (task_id, lease_epoch),
+        ).fetchone()
+        return None if row is None else str(row["actor"])
+
+    def save_receipt(self, *, task_id: int, lease_epoch: int, receipt_id: str, kind: str, request_digest: str, response: dict[str, Any], now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_receipts(task_id,lease_epoch,receipt_id,kind,request_digest,response_json,created_at) VALUES(?,?,?,?,?,?,?)",
+            (task_id, lease_epoch, receipt_id, kind, request_digest, json.dumps(response, ensure_ascii=False, sort_keys=True), now),
+        )
+
     def list_tasks(self, *, status: str | None, project_code: str | None, requested_by: str | None, limit: int) -> list[dict[str, Any]]:
         clauses: list[str] = []
         values: list[Any] = []

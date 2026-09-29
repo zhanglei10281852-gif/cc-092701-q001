@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS compute_tasks (
     last_error_code TEXT NOT NULL DEFAULT '',
     last_error_message TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
+    lease_epoch INTEGER NOT NULL DEFAULT 0,
     started_at TEXT,
     finished_at TEXT,
     created_at TEXT NOT NULL,
@@ -293,6 +294,27 @@ CREATE TABLE IF NOT EXISTS compute_interventions (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_compute_interventions_task ON compute_interventions(task_id,id);
+CREATE TABLE IF NOT EXISTS compute_lease_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL CHECK(event_type IN ('granted','renewed','succeeded','failed','requeued','rejected','recovered','cancelled')),
+    lease_epoch INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_lease_events_task ON compute_lease_events(task_id,id);
+CREATE TABLE IF NOT EXISTS compute_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    lease_epoch INTEGER NOT NULL,
+    receipt_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('complete','fail')),
+    request_digest TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, lease_epoch, receipt_id)
+);
 '''
 
 PERMISSIONS = [
@@ -385,6 +407,9 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) SELECT ?,id,? FROM permissions",
             (administrator, now),
         )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(compute_tasks)").fetchall()}
+        if columns and "lease_epoch" not in columns:
+            connection.execute("ALTER TABLE compute_tasks ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 0")
 
 
 def migrate_db() -> None:

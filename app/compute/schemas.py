@@ -38,10 +38,20 @@ class TaskClaim(BaseModel):
     lease_seconds: int = Field(default=60, ge=5, le=3600)
 
 
+class HeartbeatRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=120)
+    lease_seconds: int = Field(default=60, ge=5, le=3600)
+    lease_epoch: int = Field(ge=1, description="领取时获得的租约代次（栅栏令牌）")
+    expected_version: int = Field(ge=1, description="工作者最近读到的任务版本，必须与当前一致")
+
+
 class TaskResult(BaseModel):
     worker_id: str = Field(min_length=1, max_length=120)
     result: dict[str, Any]
     metrics: dict[str, Any] = Field(default_factory=dict)
+    lease_epoch: int = Field(ge=1, description="领取时获得的租约代次（栅栏令牌）")
+    expected_version: int = Field(ge=1, description="工作者最近读到的任务版本，必须与当前一致")
+    receipt_id: str = Field(min_length=6, max_length=160, description="评分回执幂等键，合法重试须复用同一值")
 
 
 class TaskFailure(BaseModel):
@@ -49,6 +59,9 @@ class TaskFailure(BaseModel):
     error_code: str = Field(min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=2000)
     retryable: bool = True
+    lease_epoch: int = Field(ge=1, description="领取时获得的租约代次（栅栏令牌）")
+    expected_version: int = Field(ge=1, description="工作者最近读到的任务版本，必须与当前一致")
+    receipt_id: str = Field(min_length=6, max_length=160, description="异常回执幂等键，合法重试须复用同一值")
 
 
 class CancelRequest(BaseModel):
