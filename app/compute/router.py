@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
+from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, RetryRequest, TaskClaim, TaskFailure, TaskHeartbeat, TaskResult, TaskSubmit, TemplateCreate
 from app.compute.service import ComputeOperationsService
 
 router = APIRouter(prefix="/api/compute", tags=["科学计算任务运营"])
@@ -48,18 +48,18 @@ def claim_task(payload: TaskClaim):
 
 
 @router.post("/tasks/{task_id}/heartbeat")
-def heartbeat(task_id: int, payload: TaskClaim):
-    return service().heartbeat(task_id, payload.worker_id, payload.lease_seconds)
+def heartbeat(task_id: int, payload: TaskHeartbeat):
+    return service().heartbeat(task_id, payload.worker_id, payload.lease_seconds, payload.lease_token, payload.observed_version)
 
 
 @router.post("/tasks/{task_id}/complete")
 def complete_task(task_id: int, payload: TaskResult):
-    return service().complete(task_id, payload.worker_id, payload.result, payload.metrics)
+    return service().complete(task_id, payload.worker_id, payload.result, payload.metrics, payload.lease_token, payload.observed_version, payload.receipt_key)
 
 
 @router.post("/tasks/{task_id}/fail")
 def fail_task(task_id: int, payload: TaskFailure):
-    return service().fail(task_id, payload.worker_id, payload.error_code, payload.message, payload.retryable)
+    return service().fail(task_id, payload.worker_id, payload.error_code, payload.message, payload.retryable, payload.lease_token, payload.observed_version)
 
 
 @router.post("/tasks/{task_id}/cancel")

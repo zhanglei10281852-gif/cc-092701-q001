@@ -64,3 +64,23 @@ tools/              本地维护脚本
 ## 数据一致性
 
 SQLite 连接启用外键、WAL 和忙等待策略。提交、领取、回执和人工干预在即时事务中完成；租约、配额与结果版本使用可注入时钟，便于复现跨日和恢复边界。会话令牌只保存摘要，审计与人工干预记录不会写入明文密码或令牌。
+
+### 任务接管与租约凭证
+
+任务被领取时服务端签发随机 `lease_token` 并递增 `fencing_epoch`，工作者必须在后续每次心跳、评分提交（complete）和异常回报（fail）中同时出示：
+
+- `worker_id` + `lease_token`：证明自己持有当前租约，而不是同名旧进程；
+- `observed_version`：证明自己看到的是当前任务版本；
+- 租约到期判定使用服务端可控时钟，过期后旧会话无法用心跳自救。
+
+租约过期由恢复流程回收：清空令牌、再次推进 `fencing_epoch`、任务回到队列（或按尝试次数终态失败）。旧会话恢复网络后的迟到回执会得到可区分的冲突：
+
+| HTTP | code | 含义 |
+| --- | --- | --- |
+| 409 | `lease_expired` | 凭证正确但租约已过期，恢复流程尚未接管 |
+| 409 | `lease_lost` | 令牌已失效（任务被接管或已回队列） |
+| 409 | `version_conflict` | 租约有效但任务版本已推进，需重新读取 |
+| 409 | `task_closed` | 任务已进入 succeeded/failed/cancelled 终态 |
+| 409 | `receipt_conflict` | 回执键被复用于不同工作者或不同内容 |
+
+评分提交携带 `receipt_key`：响应丢失后的合法重试原样返回首次结果，不产生第二个结果版本、不重复审计；同键不同内容（或属于已被重试取代的旧尝试）按 `receipt_conflict` 拒绝。每次领取（`lease_granted`）、续租（`heartbeat`）、接管回收（`lease_reclaimed`）、拒绝（`lease_rejected`）与成绩/异常受理（`result_accepted`/`failure_accepted`）都写入 `compute_lease_events` 时间线。任务详情接口返回 `consistency` 字段，交叉核对任务状态、工作者身份与成绩版本是否彼此一致。

@@ -58,16 +58,26 @@ def test_priority_capability_claim_and_result_version(client):
     assert no_match.status_code == 200 and no_match.json()["task"] is None
     claimed = client.post("/api/compute/tasks/claim", json={"worker_id": "w1", "capabilities": ["solver-a"], "lease_seconds": 60})
     assert claimed.status_code == 200
-    assert claimed.json()["task"]["id"] == high["id"]
+    task = claimed.json()["task"]
+    assert task["id"] == high["id"]
+    assert task["lease_token"] and task["fencing_epoch"] == 1
     completed = client.post(
         f"/api/compute/tasks/{high['id']}/complete",
-        json={"worker_id": "w1", "result": {"value": 3.14}, "metrics": {"seconds": 2}},
+        json={
+            "worker_id": "w1",
+            "lease_token": task["lease_token"],
+            "observed_version": task["version"],
+            "result": {"value": 3.14},
+            "metrics": {"seconds": 2},
+            "receipt_key": "receipt-w1-0001",
+        },
     )
     assert completed.status_code == 200
     details = client.get(f"/api/compute/task-details/{high['id']}").json()
     assert details["status"] == "succeeded"
     assert details["current_result_version"] == 1
     assert len(details["results"]) == 1
+    assert details["consistency"]["consistent"] is True
     assert low["status"] == "queued"
 
 
@@ -106,15 +116,18 @@ def test_failure_backoff_and_expired_lease_recovery(client):
     first = service.submit(submit_payload("failure-000001"))
     claimed = service.claim("worker-a", ["solver-a"], 10)
     assert claimed and claimed["id"] == first["id"]
-    failed = service.fail(first["id"], "worker-a", "numeric_error", "数值不收敛", True)
+    failed = service.fail(first["id"], "worker-a", "numeric_error", "数值不收敛", True,
+                         claimed["lease_token"], claimed["version"])
     assert failed["status"] == "queued"
     assert failed["available_at"] > failed["updated_at"]
     clock.advance(seconds=2)
     claimed_again = service.claim("worker-a", ["solver-a"], 10)
     assert claimed_again and claimed_again["attempt_count"] == 2
+    assert claimed_again["fencing_epoch"] == 2
     clock.advance(seconds=11)
     recovered = service.recover_expired()
     assert recovered["exhausted"] == [first["id"]]
     details = service.get_task(first["id"])
     assert details["status"] == "failed"
     assert details["interventions"][-1]["action"] == "lease_recovery"
+    assert details["consistency"]["consistent"] is True

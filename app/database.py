@@ -258,6 +258,8 @@ CREATE TABLE IF NOT EXISTS compute_tasks (
     available_at TEXT NOT NULL,
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at TEXT NOT NULL DEFAULT '',
+    lease_token TEXT NOT NULL DEFAULT '',
+    fencing_epoch INTEGER NOT NULL DEFAULT 0,
     current_result_version INTEGER,
     last_error_code TEXT NOT NULL DEFAULT '',
     last_error_message TEXT NOT NULL DEFAULT '',
@@ -277,10 +279,26 @@ CREATE TABLE IF NOT EXISTS compute_results (
     result_json TEXT NOT NULL,
     metrics_json TEXT NOT NULL DEFAULT '{}',
     result_digest TEXT NOT NULL,
+    receipt_key TEXT NOT NULL DEFAULT '',
+    lease_token TEXT NOT NULL DEFAULT '',
+    fencing_epoch INTEGER NOT NULL DEFAULT 0,
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(task_id, version)
 );
+CREATE TABLE IF NOT EXISTS compute_lease_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL CHECK(event_type IN ('lease_granted','heartbeat','lease_reclaimed','lease_rejected','result_accepted','failure_accepted')),
+    worker_id TEXT NOT NULL,
+    lease_token TEXT NOT NULL DEFAULT '',
+    fencing_epoch INTEGER NOT NULL DEFAULT 0,
+    task_version INTEGER NOT NULL DEFAULT 0,
+    result_version INTEGER,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_lease_events_task ON compute_lease_events(task_id,id);
 CREATE TABLE IF NOT EXISTS compute_interventions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
@@ -359,10 +377,25 @@ def transaction(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         connection.commit()
 
 
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db() -> None:
     now = to_storage(utc_now())
     with transaction(immediate=True) as connection:
         connection.executescript(SCHEMA)
+        _ensure_column(connection, "compute_tasks", "lease_token", "lease_token TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "compute_tasks", "fencing_epoch", "fencing_epoch INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "compute_results", "receipt_key", "receipt_key TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "compute_results", "lease_token", "lease_token TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "compute_results", "fencing_epoch", "fencing_epoch INTEGER NOT NULL DEFAULT 0")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_compute_results_receipt "
+            "ON compute_results(task_id, receipt_key) WHERE receipt_key <> ''"
+        )
         for code, name, resource, action in PERMISSIONS:
             connection.execute(
                 "INSERT OR IGNORE INTO permissions(code,name,resource,action) VALUES(?,?,?,?)",

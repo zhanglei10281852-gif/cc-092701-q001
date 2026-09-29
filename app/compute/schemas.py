@@ -38,14 +38,25 @@ class TaskClaim(BaseModel):
     lease_seconds: int = Field(default=60, ge=5, le=3600)
 
 
-class TaskResult(BaseModel):
+class LeaseProof(BaseModel):
+    """每次心跳/回执都必须出示的租约凭证与任务版本。"""
+
     worker_id: str = Field(min_length=1, max_length=120)
+    lease_token: str = Field(min_length=8, max_length=128)
+    observed_version: int = Field(ge=1)
+
+
+class TaskHeartbeat(LeaseProof):
+    lease_seconds: int = Field(default=60, ge=5, le=3600)
+
+
+class TaskResult(LeaseProof):
     result: dict[str, Any]
     metrics: dict[str, Any] = Field(default_factory=dict)
+    receipt_key: str = Field(default="", max_length=160)
 
 
-class TaskFailure(BaseModel):
-    worker_id: str = Field(min_length=1, max_length=120)
+class TaskFailure(LeaseProof):
     error_code: str = Field(min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=2000)
     retryable: bool = True

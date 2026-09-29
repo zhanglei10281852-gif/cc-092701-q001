@@ -74,6 +74,25 @@ class ComputeRepository:
     def result_versions(self, task_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM compute_results WHERE task_id=? ORDER BY version", (task_id,)).fetchall()]
 
+    def result_by_receipt(self, task_id: int, receipt_key: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_results WHERE task_id=? AND receipt_key=?", (task_id, receipt_key)
+        ).fetchone()
+
+    def lease_events(self, task_id: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.connection.execute(
+            "SELECT * FROM compute_lease_events WHERE task_id=? ORDER BY id", (task_id,)
+        ).fetchall()]
+
+    def add_lease_event(self, *, task_id: int, event_type: str, worker_id: str, lease_token: str,
+                        fencing_epoch: int, task_version: int, now: str,
+                        result_version: int | None = None, detail: str = "") -> None:
+        self.connection.execute(
+            "INSERT INTO compute_lease_events(task_id,event_type,worker_id,lease_token,fencing_epoch,task_version,result_version,detail,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (task_id, event_type, worker_id, lease_token, fencing_epoch, task_version, result_version, detail[:500], now),
+        )
+
     def interventions(self, task_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM compute_interventions WHERE task_id=? ORDER BY id", (task_id,)).fetchall()]
 
